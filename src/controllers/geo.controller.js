@@ -6,9 +6,6 @@ const axios = require('axios');
 // Utilidades internas
 // ---------------------------------------------------------------------------
 
-/**
- * Distancia en km entre dos coordenadas usando la fórmula de Haversine.
- */
 function haversine(lat1, lon1, lat2, lon2) {
   const R = 6371;
   const dLat = (lat2 - lat1) * (Math.PI / 180);
@@ -21,11 +18,28 @@ function haversine(lat1, lon1, lat2, lon2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-/**
- * Convierte una dirección en texto a coordenadas usando Geoapify.
- * Docs: https://apidocs.geoapify.com/docs/geocoding/forward-geocoding/
- */
 async function geocodificarTexto(texto) {
+  const aliases = {
+    'cdmx': 'Ciudad de Mexico',
+    'df': 'Ciudad de Mexico',
+    'd.f.': 'Ciudad de Mexico',
+    'mty': 'Monterrey',
+    'gdl': 'Guadalajara',
+    'gda': 'Guadalajara',
+    'mex': 'Estado de Mexico',
+    'qro': 'Queretaro',
+    'pue': 'Puebla',
+    'slp': 'San Luis Potosi',
+    'ags': 'Aguascalientes',
+    'zac': 'Zacatecas',
+  };
+
+  let textoNormalizado = texto;
+  for (const [abrev, nombre] of Object.entries(aliases)) {
+    const regex = new RegExp(`\\b${abrev}\\b`, 'gi');
+    textoNormalizado = textoNormalizado.replace(regex, nombre);
+  }
+
   const apiKey = process.env.GEOAPIFY_API_KEY;
 
   if (!apiKey) {
@@ -37,11 +51,11 @@ async function geocodificarTexto(texto) {
   const url = 'https://api.geoapify.com/v1/geocode/search';
   const { data } = await axios.get(url, {
     params: {
-      text: texto,
+      text: textoNormalizado,
       apiKey,
       lang: 'es',
       limit: 1,
-      bias: 'countrycode:mx', // prioriza resultados en México
+      bias: 'countrycode:mx',
     },
   });
 
@@ -63,39 +77,24 @@ async function geocodificarTexto(texto) {
 // Controllers
 // ---------------------------------------------------------------------------
 
-/**
- * POST /geo/sucursal-cercana
- *
- * Recibe la ubicación del usuario (lat+lon nativo de WhatsApp, o dirección en texto)
- * y un array de sucursales con sus coordenadas. Devuelve las sucursales ordenadas
- * por distancia, con la más cercana primero.
- *
- * Body:
- * {
- *   "lat": 21.88,              // coordenadas nativas de WhatsApp (preferido)
- *   "lon": -102.28,            // si se mandan lat+lon, se ignora "direccion"
- *   "direccion": "...",        // texto libre — se geocodifica si no hay lat+lon
- *   "sucursales": [
- *     {
- *       "nombre": "Sucursal Centro",
- *       "lat": 21.8818,
- *       "lon": -102.2845,
- *       "direccion": "Madero 45, Aguascalientes",  // opcional, para mostrar al usuario
- *       "telefono": "449-123-4567",                // cualquier campo extra se conserva
- *       "horario": "Lun-Vie 9-18"
- *     }
- *   ]
- * }
- */
 async function sucursalCercana(req, res) {
-  const { lat, lon, direccion, sucursales } = req.body;
+  const { lat, lon, direccion } = req.body;
 
-  const sucursalesParseadas = typeof sucursales === 'string' 
-  ? JSON.parse(sucursales) 
-  : sucursales;
+  // Parsear sucursales si llega como string (comportamiento de la plataforma Plática)
+  let sucursalesParseadas;
+  try {
+    sucursalesParseadas = typeof req.body.sucursales === 'string'
+      ? JSON.parse(req.body.sucursales)
+      : req.body.sucursales;
+  } catch (e) {
+    return res.status(400).json({
+      error: 'Bad Request',
+      message: 'El campo "sucursales" no es un JSON válido.',
+    });
+  }
 
   // --- Validaciones ---
-  if (!sucursales || !Array.isArray(sucursales) || sucursales.length === 0) {
+  if (!sucursalesParseadas || !Array.isArray(sucursalesParseadas) || sucursalesParseadas.length === 0) {
     return res.status(400).json({
       error: 'Bad Request',
       message: 'El campo "sucursales" es requerido y debe ser un array con al menos un elemento.',
@@ -113,8 +112,8 @@ async function sucursalCercana(req, res) {
   }
 
   // Validar que cada sucursal tenga lat y lon
-  for (let i = 0; i < sucursales.length; i++) {
-    const s = sucursales[i];
+  for (let i = 0; i < sucursalesParseadas.length; i++) {
+    const s = sucursalesParseadas[i];
     if (s.lat === undefined || s.lon === undefined) {
       return res.status(400).json({
         error: 'Bad Request',
@@ -149,7 +148,10 @@ async function sucursalCercana(req, res) {
         return res.status(500).json({ error: 'Internal Server Error', message: err.message });
       }
       if (err.code === 'GEOCODING_NOT_FOUND') {
-        return res.status(422).json({ error: 'Unprocessable Entity', message: err.message });
+        return res.status(200).json({
+          success: false,
+          message: `No pude encontrar la dirección "${direccion}". ¿Puedes ser más específico? Por ejemplo, agrega la colonia o ciudad completa.`,
+        });
       }
       return res.status(500).json({
         error: 'Internal Server Error',
@@ -159,7 +161,7 @@ async function sucursalCercana(req, res) {
   }
 
   // --- Calcular distancias ---
-  const conDistancia = sucursales.map((s) => ({
+  const conDistancia = sucursalesParseadas.map((s) => ({
     ...s,
     distancia_km: parseFloat(
       haversine(userLat, userLon, parseFloat(s.lat), parseFloat(s.lon)).toFixed(2)
