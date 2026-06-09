@@ -90,6 +90,10 @@ async function geocodificarTexto(texto) {
 async function sucursalCercana(req, res) {
   const { lat, lon, direccion, sucursales } = req.body;
 
+  const sucursalesParseadas = typeof sucursales === 'string' 
+  ? JSON.parse(sucursales) 
+  : sucursales;
+
   // --- Validaciones ---
   if (!sucursales || !Array.isArray(sucursales) || sucursales.length === 0) {
     return res.status(400).json({
