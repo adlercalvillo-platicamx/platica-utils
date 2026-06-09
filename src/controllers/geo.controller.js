@@ -41,7 +41,7 @@ async function geocodificarTexto(texto) {
       apiKey,
       lang: 'es',
       limit: 1,
-      filter: 'countrycode:mx', // prioriza resultados en México
+      bias: 'countrycode:mx', // prioriza resultados en México
     },
   });
 
